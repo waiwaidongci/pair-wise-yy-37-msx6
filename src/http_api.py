@@ -8,11 +8,13 @@ from urllib.parse import parse_qs, urlparse
 
 from .domain import (ConflictError, DomainError, NotFoundError, PermissionDenied,
                      ValidationError)
-from .service import Service
+from .service import EmissionService, Service
 
 
-def make_handler(service: Service, static_dir: str):
+def make_handler(service: Service, static_dir: str,
+                 emission_service: EmissionService = None):
     root = Path(static_dir)
+    emission = emission_service or EmissionService(service.repository)
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "ModularHell/1.0"
@@ -75,11 +77,32 @@ def make_handler(service: Service, static_dir: str):
 
         def do_GET(self) -> None:
             try:
-                path = urlparse(self.path).path
+                parsed = urlparse(self.path)
+                path = parsed.path
+                query = parse_qs(parsed.query)
                 if path == "/health":
                     self._json(200, {"status": "ok"})
                 elif path == "/":
                     self._html(root / "index.html")
+                elif path == "/api/emission/outlets":
+                    actor, role = self._identity()
+                    del actor
+                    self._json(200, {"outlets": emission.list_outlets(role)})
+                elif path == "/api/emission/batches":
+                    actor, role = self._identity()
+                    del actor
+                    status = query.get("status", [None])[0]
+                    self._json(200, {"batches": emission.list_batches(role, status)})
+                elif path == "/api/emission/orders":
+                    actor, role = self._identity()
+                    del actor
+                    field_no = query.get("field_no", [None])[0]
+                    self._json(200, {"orders": emission.list_orders(role, field_no)})
+                elif path.startswith("/api/emission/links/"):
+                    field_no = path.rsplit("/", 1)[-1]
+                    actor, role = self._identity()
+                    del actor
+                    self._json(200, emission.monitoring_link(field_no, role))
                 elif path == "/api/items":
                     actor, role = self._identity()
                     del actor
@@ -108,7 +131,17 @@ def make_handler(service: Service, static_dir: str):
                 path = urlparse(self.path).path
                 actor, role = self._identity()
                 body = self._body()
-                if path == "/api/items":
+                if path == "/api/emission/outlets":
+                    self._json(201, emission.register_outlet(body, actor, role))
+                elif path == "/api/emission/batches":
+                    self._json(201, emission.ingest_batch(body, actor, role))
+                elif path == "/api/emission/batches/bulk":
+                    self._json(201, emission.ingest_batches(body, actor, role))
+                elif path == "/api/emission/batches/retry-failed":
+                    self._json(201, emission.retry_failed_batches(actor, role))
+                elif path == "/api/emission/calibrations":
+                    self._json(201, emission.calibrate_batch(body, actor, role))
+                elif path == "/api/items":
                     self._json(201, service.create_item(body, actor, role))
                 elif path.startswith("/api/items/") and path.endswith("/records"):
                     item_id = int(path.split("/")[3])
